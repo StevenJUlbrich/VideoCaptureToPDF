@@ -7,12 +7,13 @@ import time
 import cv2
 import img2pdf
 import imutils
+import numpy as np
 from skimage.metrics import structural_similarity as ssim
 
 OUTPUT_SLIDES_DIR = "./output"
 
-FRAME_RATE = 3
-WARMUP = 3
+FRAME_RATE = 8
+WARMUP = 2
 RESIZE_WIDTH = 600
 
 # SSIM below this threshold means "scene changed enough to capture".
@@ -39,95 +40,128 @@ def intialize_output_dir(video_path):
     return output_dir
 
 
+def preprocess_for_diff(frame):
+    """
+    Focus only on the area where meaningful animation happens.
+    Removes a lot of empty background that would dilute the signal.
+    """
+    h, w = frame.shape[:2]
+
+    # Crop away most of the empty top area and some outer margins.
+    # Tune these if needed.
+    y1 = int(h * 0.28)
+    y2 = int(h * 0.95)
+    x1 = int(w * 0.03)
+    x2 = int(w * 0.97)
+
+    roi = frame[y1:y2, x1:x2]
+
+    roi = imutils.resize(roi, width=700)
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    return roi, gray
+
+
 def get_frames(video_path: str):
-    """Extracts frames at FRAME_RATE fps."""
+    """Extract sampled frames from the video."""
     vcap = cv2.VideoCapture(video_path)
 
     if not vcap.isOpened():
-        raise Exception("Error opening video file {}".format(video_path))
+        raise Exception(f"Error opening video file {video_path}")
 
-    fps = vcap.get(cv2.CAP_PROP_FPS)
-    frames_to_skip = int(fps / FRAME_RATE)
-
+    frame_time = 0.0
     frame_count = 0
-    yield_count = 0
 
     while vcap.isOpened():
+        vcap.set(cv2.CAP_PROP_POS_MSEC, frame_time * 1000)
+
         grabbed, frame = vcap.read()
         if not grabbed:
             break
 
         frame_count += 1
 
-        if frame_count % frames_to_skip == 0:
-            yield_count += 1
-            frame_time = frame_count / fps
+        if frame_count >= WARMUP:
+            yield frame_count, frame_time, frame
 
-            if yield_count < WARMUP:
-                continue
-            else:
-                yield yield_count, frame_time, frame
+        frame_time += 1.0 / FRAME_RATE
+
+    vcap.release()
 
 
 def detect_unique_screenshots(video_path, output_folder_screenshot) -> None:
-    """Detect visually distinct frames using SSIM-based scene-change detection.
+    """
+    Capture frames whenever the visible state changes enough.
 
-    Instead of background subtraction (which assumes a mostly-static scene),
-    this compares every sampled frame against the previous frame to find
-    scene changes, then deduplicates against the last *saved* frame.
+    This works better for algorithm animations than background subtraction.
     """
     start_time = time.time()
 
     screenshots_count = 0
-    last_capture_time = -999.0
-    prev_gray = None
     last_saved_gray = None
+    last_capture_time = -999.0
+
+    # Tuning knobs
+    min_capture_gap_seconds = 0.35
+    pixel_diff_threshold = 18  # per-pixel difference threshold
+    min_changed_percent = 0.12  # save when >= this % of ROI changed
 
     for frame_count, frame_time, frame in get_frames(video_path):
         original_frame = frame.copy()
-        resized = imutils.resize(frame, width=RESIZE_WIDTH)
-        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        _, current_gray = preprocess_for_diff(frame)
 
-        # First usable frame — always save it.
-        if prev_gray is None:
-            prev_gray = gray
-            filename = f"{screenshots_count:03}_{round(frame_time / 60, 2)}.png"
-            cv2.imwrite(os.path.join(output_folder_screenshot, filename), original_frame)
+        # Always save the first usable frame
+        if last_saved_gray is None:
+            filename = f"{screenshots_count:03}_{frame_time:.2f}.png"
+            path = os.path.join(output_folder_screenshot, filename)
+            cv2.imwrite(path, original_frame)
             print(f"Screenshot captured: {filename}")
+
             screenshots_count += 1
+            last_saved_gray = current_gray.copy()
             last_capture_time = frame_time
-            last_saved_gray = gray.copy()
             continue
 
-        # Compare against the *previous* frame to detect scene changes.
-        score = ssim(prev_gray, gray)
-        prev_gray = gray
-
-        # No significant change — skip.
-        if score > SCENE_CHANGE_THRESHOLD:
+        # Cooldown to prevent near-duplicates
+        if (frame_time - last_capture_time) < min_capture_gap_seconds:
             continue
 
-        # Enforce minimum time gap.
-        if (frame_time - last_capture_time) < MIN_CAPTURE_GAP:
-            continue
+        # Absolute difference vs last saved frame
+        diff = cv2.absdiff(current_gray, last_saved_gray)
 
-        # Suppress near-duplicates of the last saved frame.
-        if last_saved_gray is not None:
-            dup_score = ssim(last_saved_gray, gray)
-            if dup_score > DUPLICATE_SSIM:
-                continue
+        # Turn subtle changes into a binary mask
+        _, thresh = cv2.threshold(diff, pixel_diff_threshold, 255, cv2.THRESH_BINARY)
 
-        filename = f"{screenshots_count:03}_{round(frame_time / 60, 2)}.png"
-        path = os.path.join(output_folder_screenshot, filename)
-        cv2.imwrite(path, original_frame)
-        print(f"Screenshot captured: {filename}")
+        # Expand meaningful changed areas a bit
+        kernel = np.ones((3, 3), np.uint8)
+        thresh = cv2.dilate(thresh, kernel, iterations=2)
 
-        screenshots_count += 1
-        last_capture_time = frame_time
-        last_saved_gray = gray.copy()
+        changed_pixels = cv2.countNonZero(thresh)
+        total_pixels = thresh.shape[0] * thresh.shape[1]
+        changed_percent = (changed_pixels / float(total_pixels)) * 100.0
+
+        # Uncomment to tune thresholds
+        # print(
+        #     f"frame={frame_count} time={frame_time:.2f}s "
+        #     f"changed_percent={changed_percent:.3f}"
+        # )
+
+        if changed_percent >= min_changed_percent:
+            filename = f"{screenshots_count:03}_{frame_time:.2f}.png"
+            path = os.path.join(output_folder_screenshot, filename)
+            cv2.imwrite(path, original_frame)
+            print(
+                f"Screenshot captured: {filename} "
+                f"(changed_percent={changed_percent:.3f})"
+            )
+
+            screenshots_count += 1
+            last_saved_gray = current_gray.copy()
+            last_capture_time = frame_time
 
     print(f"Total screenshots: {screenshots_count}")
-    print(f"Time taken: {time.time() - start_time}")
+    print(f"Time taken: {time.time() - start_time:.2f}")
 
 
 def convert_screenshots_to_pdf(output_folder_screenshot) -> None:
