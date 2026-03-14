@@ -22,7 +22,7 @@ MAX_PERCENTAGE = 3  # maximum percentage of the frame that must be foreground to
 def intialize_output_dir(video_path):
     """Creates the output directory and copies the video to the output directory"""
     output_dir = os.path.join(
-        f"{OUTPUT_SLIDES_DIR}/", os.path.splitext(os.path.basename(video_path))[0]
+        OUTPUT_SLIDES_DIR, os.path.splitext(os.path.basename(video_path))[0]
     )
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
@@ -103,7 +103,7 @@ def convert_screenshots_to_pdf(output_folder_screenshot) -> None:
     # Get the file name without the extension
     file_name = os.path.splitext(os.path.basename(output_folder_screenshot))[0]
 
-    output_folder_pdf = f"{OUTPUT_SLIDES_DIR}/{file_name}" + ".pdf"
+    output_folder_pdf = os.path.join(OUTPUT_SLIDES_DIR, f"{file_name}.pdf")
 
     images = []
     for file in glob.glob(f"{output_folder_screenshot}/*.png"):

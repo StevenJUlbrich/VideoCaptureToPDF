@@ -6,22 +6,22 @@ The project coverts MP4 video presentation into a PDF Document.  The PNG files g
 
 ## Setup
 
-```python
-pip install -r requirments.txt
+```bash
+uv sync
 ```
 
 ## Steps to Run Code
 
-From Command prompt where the video2pdf.py resides
+From the project root directory:
 
-```cmd
-python .\video2pdf.py --video "<video path>"
+```bash
+uv run src/video2pdf.py --video "<video path>"
 ```
 
 ## Example
 
-```cmd
-python .\video2pdf.py --video "./input/Test Video 1.mp4"
+```bash
+uv run src/video2pdf.py --video "./input/Test Video 1.mp4"
 ```
 
 ## More
