@@ -7,16 +7,25 @@ import time
 import cv2
 import img2pdf
 import imutils
+from skimage.metrics import structural_similarity as ssim
 
 OUTPUT_SLIDES_DIR = "./output"
 
-FRAME_RATE = 6
-WARMUP = 5
-FGBG_HISTORY = FRAME_RATE * 15
-FGBG_THRESHOLD = 25
-FGBG_SHADOW = False
-MIN_PERCENTAGE = 0.5
-MAX_PERCENTAGE = 1.5
+FRAME_RATE = 3
+WARMUP = 3
+RESIZE_WIDTH = 600
+
+# SSIM below this threshold means "scene changed enough to capture".
+# Range 0-1; lower = more captures. 0.45 is a good starting point for
+# general-purpose video (not slides).
+SCENE_CHANGE_THRESHOLD = 0.45
+
+# Minimum seconds between captures to avoid rapid-fire saves.
+MIN_CAPTURE_GAP = 2.0
+
+# When comparing a candidate against the last *saved* frame, suppress
+# if SSIM is above this value (i.e. the two frames are nearly identical).
+DUPLICATE_SSIM = 0.92
 
 
 def intialize_output_dir(video_path):
@@ -27,21 +36,18 @@ def intialize_output_dir(video_path):
     if os.path.exists(output_dir):
         shutil.rmtree(output_dir)
     os.makedirs(output_dir)
-    # shutil.copy(video_path, output_dir)
     return output_dir
 
 
 def get_frames(video_path: str):
-    """Extracts frames sequentially, yielding 3 frames per second"""
+    """Extracts frames at FRAME_RATE fps."""
     vcap = cv2.VideoCapture(video_path)
 
     if not vcap.isOpened():
         raise Exception("Error opening video file {}".format(video_path))
 
     fps = vcap.get(cv2.CAP_PROP_FPS)
-    frames_to_skip = int(
-        fps / FRAME_RATE
-    )  # Calculate how many frames to skip to get desired FRAME_RATE
+    frames_to_skip = int(fps / FRAME_RATE)
 
     frame_count = 0
     yield_count = 0
@@ -53,7 +59,6 @@ def get_frames(video_path: str):
 
         frame_count += 1
 
-        # Only process the frame if it matches our desired frame rate interval
         if frame_count % frames_to_skip == 0:
             yield_count += 1
             frame_time = frame_count / fps
@@ -65,65 +70,52 @@ def get_frames(video_path: str):
 
 
 def detect_unique_screenshots(video_path, output_folder_screenshot) -> None:
-    """Detect stable, unique screenshots from the video."""
-    fgbg = cv2.createBackgroundSubtractorMOG2(
-        history=FGBG_HISTORY,
-        varThreshold=FGBG_THRESHOLD,
-        detectShadows=FGBG_SHADOW,
-    )
+    """Detect visually distinct frames using SSIM-based scene-change detection.
 
+    Instead of background subtraction (which assumes a mostly-static scene),
+    this compares every sampled frame against the previous frame to find
+    scene changes, then deduplicates against the last *saved* frame.
+    """
     start_time = time.time()
-    (W, H) = (None, None)
 
     screenshots_count = 0
-    stable_frames = 0
-    required_stable_frames = 3
-    min_capture_gap_seconds = 2.0
     last_capture_time = -999.0
+    prev_gray = None
     last_saved_gray = None
 
     for frame_count, frame_time, frame in get_frames(video_path):
         original_frame = frame.copy()
-        resized_frame = imutils.resize(frame, width=600)
-        gray_small = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2GRAY)
+        resized = imutils.resize(frame, width=RESIZE_WIDTH)
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
 
-        mask = fgbg.apply(resized_frame)
-
-        if W is None or H is None:
-            (H, W) = resized_frame.shape[:2]
-
-        p_diff = (cv2.countNonZero(mask) / float(W * H)) * 100
-
-        # Debug while tuning:
-        # print(f"frame={frame_count} time={frame_time:.2f}s p_diff={p_diff:.3f}")
-
-        # Count consecutive stable frames
-        if p_diff < MIN_PERCENTAGE:
-            stable_frames += 1
-        else:
-            stable_frames = 0
-
-        # Need several stable frames in a row
-        if stable_frames < required_stable_frames:
+        # First usable frame — always save it.
+        if prev_gray is None:
+            prev_gray = gray
+            filename = f"{screenshots_count:03}_{round(frame_time / 60, 2)}.png"
+            cv2.imwrite(os.path.join(output_folder_screenshot, filename), original_frame)
+            print(f"Screenshot captured: {filename}")
+            screenshots_count += 1
+            last_capture_time = frame_time
+            last_saved_gray = gray.copy()
             continue
 
-        # Prevent rapid back-to-back captures
-        if (frame_time - last_capture_time) < min_capture_gap_seconds:
+        # Compare against the *previous* frame to detect scene changes.
+        score = ssim(prev_gray, gray)
+        prev_gray = gray
+
+        # No significant change — skip.
+        if score > SCENE_CHANGE_THRESHOLD:
             continue
 
-        # Suppress near-duplicates by comparing against last saved frame
-        is_duplicate = False
+        # Enforce minimum time gap.
+        if (frame_time - last_capture_time) < MIN_CAPTURE_GAP:
+            continue
+
+        # Suppress near-duplicates of the last saved frame.
         if last_saved_gray is not None:
-            frame_delta = cv2.absdiff(gray_small, last_saved_gray)
-            mean_delta = frame_delta.mean()
-
-            # Lower value means the frames are more similar.
-            # Tune this value if needed.
-            if mean_delta < 2.0:
-                is_duplicate = True
-
-        if is_duplicate:
-            continue
+            dup_score = ssim(last_saved_gray, gray)
+            if dup_score > DUPLICATE_SSIM:
+                continue
 
         filename = f"{screenshots_count:03}_{round(frame_time / 60, 2)}.png"
         path = os.path.join(output_folder_screenshot, filename)
@@ -132,8 +124,7 @@ def detect_unique_screenshots(video_path, output_folder_screenshot) -> None:
 
         screenshots_count += 1
         last_capture_time = frame_time
-        last_saved_gray = gray_small.copy()
-        stable_frames = 0
+        last_saved_gray = gray.copy()
 
     print(f"Total screenshots: {screenshots_count}")
     print(f"Time taken: {time.time() - start_time}")
