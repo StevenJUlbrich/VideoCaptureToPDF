@@ -8,6 +8,8 @@ dependencies = [
     "imutils>=0.5.4",
     "opencv-python>=4.6.0.66",
     "img2pdf>=0.4.0",
+    "scikit-image>=0.22.0",
+    "numpy>=1.26.0",
 ]
 
 [tool.pylint.master]
