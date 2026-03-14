@@ -11,12 +11,12 @@ import imutils
 OUTPUT_SLIDES_DIR = f"./output"
 
 FRAME_RATE = 3  # number of frames per second to process from the video. few the frames, faster the processing
-WARMPUP = 10  # initial frames to skip
+WARMUP = 5  # initial frames to skip
 FGBG_HISTORY = FRAME_RATE * 15  # number of frames to use to build the background model
 FGBG_THRESHOLD = 25  # threshold value for the background subtraction
 FGBG_SHADOW = False  # whether or not to detect shadows
-MIN_PERCENTAGE = 0.01  # minimum percentage of the frame that must be foreground to be considered a motion
-MAX_PERCENTAGE = 0.5  # maximum percentage of the frame that must be foreground to be considered a motion
+MIN_PERCENTAGE = 0.5  # minimum percentage of the frame that must be foreground to be considered a motion
+MAX_PERCENTAGE = 1.5  # maximum percentage of the frame that must be foreground to be considered a motion
 
 
 def intialize_output_dir(video_path):
@@ -58,7 +58,7 @@ def get_frames(video_path: str):
             yield_count += 1
             frame_time = frame_count / fps
 
-            if yield_count < WARMPUP:
+            if yield_count < WARMUP:
                 continue
             else:
                 yield yield_count, frame_time, frame
@@ -88,7 +88,7 @@ def detect_unique_screenshots(video_path, output_folder_screenshot) -> None:
         p_diff = (cv2.countNonZero(mask) / float(W * H)) * 100
 
         # if the p_diff is less than N% then there is no motion in the frame and we need to capture the screenshot
-        if p_diff < MIN_PERCENTAGE and not captured and frame_count > WARMPUP:
+        if p_diff < MIN_PERCENTAGE and not captured and frame_count > WARMUP:
             # capture the screenshot
             filename = f"{screenshots_count:03}_{round(frame_time/60, 2)}.png"
             path = os.path.join(output_folder_screenshot, filename)
