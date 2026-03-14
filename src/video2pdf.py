@@ -15,8 +15,8 @@ WARMPUP = 10  # initial frames to skip
 FGBG_HISTORY = FRAME_RATE * 15  # number of frames to use to build the background model
 FGBG_THRESHOLD = 25  # threshold value for the background subtraction
 FGBG_SHADOW = False  # whether or not to detect shadows
-MIN_PERCENTAGE = 0.1  # minimum percentage of the frame that must be foreground to be considered a motion
-MAX_PERCENTAGE = 3  # maximum percentage of the frame that must be foreground to be considered a motion
+MIN_PERCENTAGE = 0.01  # minimum percentage of the frame that must be foreground to be considered a motion
+MAX_PERCENTAGE = 0.5  # maximum percentage of the frame that must be foreground to be considered a motion
 
 
 def intialize_output_dir(video_path):
@@ -32,30 +32,36 @@ def intialize_output_dir(video_path):
 
 
 def get_frames(video_path: str):
-    """Extracts frames from a video and returns a list of frames"""
+    """Extracts frames sequentially, yielding 3 frames per second"""
     vcap = cv2.VideoCapture(video_path)
 
     if not vcap.isOpened():
         raise Exception("Error opening video file {}".format(video_path))
 
-    total_frames = int(vcap.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_time = 0
-    frame_count = 0
-    while vcap.isOpened():
-        # grab a fram from the video
-        vcap.set(
-            cv2.CAP_PROP_POS_MSEC, frame_time * 1000
-        )  # move frame pointer to the frame_time
-        frame_time += 1 / FRAME_RATE
-        (grabbed, frame) = vcap.read()
+    fps = vcap.get(cv2.CAP_PROP_FPS)
+    frames_to_skip = int(
+        fps / FRAME_RATE
+    )  # Calculate how many frames to skip to get desired FRAME_RATE
 
+    frame_count = 0
+    yield_count = 0
+
+    while vcap.isOpened():
+        grabbed, frame = vcap.read()
         if not grabbed:
             break
+
         frame_count += 1
-        if frame_count < WARMPUP:
-            continue
-        else:
-            yield frame_count, frame_time, frame
+
+        # Only process the frame if it matches our desired frame rate interval
+        if frame_count % frames_to_skip == 0:
+            yield_count += 1
+            frame_time = frame_count / fps
+
+            if yield_count < WARMPUP:
+                continue
+            else:
+                yield yield_count, frame_time, frame
 
 
 def detect_unique_screenshots(video_path, output_folder_screenshot) -> None:
